@@ -17,6 +17,9 @@ limitations under the License.
 
 #![no_std]
 
+use zerocopy::byteorder::native_endian as ne;
+use zerocopy_derive::*;
+
 pub mod flags;
 pub mod scap;
 
@@ -62,10 +65,11 @@ impl TryFrom<u16> for EventType {
 
 #[derive(Debug)]
 #[repr(C, packed)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Unaligned)]
 pub struct EventHeader {
-    pub ts: u64,
-    pub tgid_pid: u64,
-    pub len: u32,
-    pub evt_type: EventType,
-    pub nparams: u32,
+    pub ts: ne::U64,
+    pub tgid_pid: ne::U64,
+    pub len: ne::U32,
+    pub evt_type: ne::U16,
+    pub nparams: ne::U32,
 }

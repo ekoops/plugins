@@ -44,14 +44,17 @@ use aya_ebpf::{
     programs::{FEntryContext, FExitContext},
     EbpfContext,
 };
+use aya_log_ebpf::info;
 use krsi_common::EventType;
 use krsi_ebpf_core::{wrap_arg, File, IoKiocb, Sockaddr, Socket, Wrap};
 
 use crate::{
-    defs, iouring, shared_state,
+    defs, get_event_num_params, iouring, shared_state,
     shared_state::op_info::{ConnectData, OpInfo},
-    FileDescriptor,
+    submit_event, FileDescriptor,
 };
+
+const EVT_TYPE: EventType = EventType::Connect;
 
 #[fentry]
 fn io_connect_e(ctx: FEntryContext) -> u32 {
@@ -102,7 +105,7 @@ fn try___sys_connect_file_x(ctx: FExitContext) -> Result<u32, i64> {
     };
 
     let auxmap = shared_state::auxiliary_map().ok_or(1)?;
-    auxmap.preload_event_header(EventType::Connect);
+    let mut writer = auxmap.writer(EVT_TYPE, get_event_num_params(EVT_TYPE))?;
 
     let ret: c_int = unsafe { ctx.arg(4) };
 
@@ -111,29 +114,31 @@ fn try___sys_connect_file_x(ctx: FExitContext) -> Result<u32, i64> {
         let file: File = wrap_arg(unsafe { ctx.arg(0) });
         let sock = Socket::wrap(file.private_data().unwrap_or(null_mut()).cast());
         let sockaddr: Sockaddr = wrap_arg(unsafe { ctx.arg(1) });
-        auxmap.store_sock_tuple_param(&sock, true, &sockaddr, true)
+        writer.push_sock_tuple(&ctx, &sock, true, &sockaddr, true)
     } else {
-        auxmap.store_empty_param();
+        writer.push_empty();
         0
     };
 
     if op_data.is_iou {
         op_data.socktuple_len = socktuple_len;
+        let writer_state = writer.save();
+        auxmap.save_writer_state(writer_state);
         return Ok(0);
     }
 
     // Parameter 2: iou_ret.
-    auxmap.store_empty_param();
+    writer.push_empty();
 
     // Parameter 3: res.
-    auxmap.store_param(ret as i64);
+    writer.push(ret as i64);
 
     // Parameter 4: fd.
     // Parameter 5: file_index.
-    auxmap.store_file_descriptor_param(op_data.file_descriptor);
+    writer.push_file_descriptor(op_data.file_descriptor);
 
-    auxmap.finalize_event_header();
-    auxmap.submit_event();
+    let event = auxmap.as_bytes()?;
+    submit_event(event);
     Ok(0)
 }
 
@@ -151,28 +156,28 @@ fn try_io_connect_x(ctx: FExitContext) -> Result<u32, i64> {
     let _ = shared_state::op_info::remove(pid);
 
     let auxmap = shared_state::auxiliary_map().ok_or(1)?;
-    auxmap.preload_event_header(EventType::Connect);
+    let mut writer = auxmap.resume_writer()?;
 
     // Parameter 1: tuple. (Already populated on fexit:__sys_connect_file)
-    auxmap.skip_param(op_data.socktuple_len);
 
     // Parameter 2: iou_ret.
     let iou_ret: i64 = unsafe { ctx.arg(2) };
-    auxmap.store_param(iou_ret);
-
-    // Parameter 3: res.
-    let req: IoKiocb = wrap_arg(unsafe { ctx.arg(0) });
-    match iouring::io_kiocb_cqe_res(&req, iou_ret) {
-        Ok(Some(cqe_res)) => auxmap.store_param(cqe_res as i64),
-        _ => auxmap.store_empty_param(),
-    }
-
-    // Parameter 4: fd.
-    // Parameter 5: file_index.
-    auxmap.store_file_descriptor_param(op_data.file_descriptor);
-
-    auxmap.finalize_event_header();
-    auxmap.submit_event();
+    writer.push(iou_ret);
+    //
+    // // Parameter 3: res.
+    // let req: IoKiocb = wrap_arg(unsafe { ctx.arg(0) });
+    // match iouring::io_kiocb_cqe_res(&req, iou_ret) {
+    //     Ok(Some(cqe_res)) => writer.push(cqe_res as i64),
+    //     _ => writer.push_empty(),
+    // }
+    //
+    // // Parameter 4: fd.
+    // // Parameter 5: file_index.
+    // writer.push_file_descriptor(op_data.file_descriptor);
+    //
+    let event = auxmap.as_bytes()?;
+    info!(&ctx, "EVENT LEN: {}", event.len());
+    submit_event(event);
     Ok(0)
 }
 

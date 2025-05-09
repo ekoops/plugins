@@ -36,6 +36,9 @@ num_cpus = "1.13.0"
 byteorder = "1.5.0"
 thiserror = "2.0.12"
 paste = {workspace = true}
+quote = "1.0.40"
+zerocopy ={ workspace = true}
+zerocopy-derive ={ workspace = true}
 
 [build-dependencies]
 # TODO(https://github.com/rust-lang/cargo/issues/12375): this should be an artifact dependency, but

@@ -73,9 +73,9 @@ use krsi_common::{scap as scap_shared, EventType};
 use krsi_ebpf_core::{wrap_arg, File};
 
 use crate::{
-    defs, files, scap, shared_state,
+    defs, files, get_event_num_params, scap, shared_state,
     shared_state::op_info::{OpInfo, OpenData},
-    FileDescriptor,
+    submit_event, FileDescriptor,
 };
 
 #[fentry]
@@ -116,13 +116,18 @@ fn try_security_file_open_x(ctx: FExitContext) -> Result<u32, i64> {
         return shared_state::op_info::remove(pid);
     };
 
-    auxmap.preload_event_header(EventType::Open);
+    const EVT_TYPE: EventType = EventType::Open;
+    let mut writer = auxmap.writer(EVT_TYPE, get_event_num_params(EVT_TYPE))?;
 
     // Parameter 1: name.
     let file: File = wrap_arg(unsafe { ctx.arg(0) });
     let path = file.f_path();
-    match unsafe { auxmap.store_path_param(&path, defs::MAX_PATH) } {
-        Ok(_) => Ok(0),
+    match writer.push_path(&path, defs::MAX_PATH) {
+        Ok(_) => {
+            let writer_state = writer.save();
+            auxmap.save_writer_state(writer_state);
+            Ok(0)
+        }
         Err(_) => shared_state::op_info::remove(pid),
     }
 }
@@ -138,12 +143,13 @@ pub fn try_fd_install_x(
     };
 
     let auxmap = shared_state::auxiliary_map().ok_or(1)?;
-    // Don't call auxmap.preload_event_header, because we want to continue to append to the work
-    // already done on `fexit:security_file_open`.
+    // Don't call auxmap.writer(), because we want to continue to append to the work already done on
+    // `fexit:security_file_open`.
+    let mut writer = auxmap.resume_writer()?;
 
     // Parameter 2: fd.
     // Parameter 3: file_index.
-    auxmap.store_file_descriptor_param(file_descriptor);
+    writer.push_file_descriptor(file_descriptor);
 
     let (dev, ino, overlay) = files::dev_ino_overlay(file).unwrap_or((0, 0, files::Overlay::None));
 
@@ -158,16 +164,19 @@ pub fn try_fd_install_x(
     let mode: c_uint = file.f_mode().unwrap_or(0);
     scap_flags |= scap::encode_fmode_created(mode);
 
-    auxmap.store_param(scap_flags);
+    writer.push(scap_flags);
 
     // Parameter 5: mode.
-    auxmap.store_param(scap::encode_open_mode(flags, mode));
+    writer.push(scap::encode_open_mode(flags, mode));
 
     // Parameter 6: dev.
-    auxmap.store_param(dev as u32);
+    writer.push(dev as u32);
 
     // Parameter 7: ino.
-    auxmap.store_param(ino);
+    writer.push(ino);
+
+    let writer_state = writer.save();
+    auxmap.save_writer_state(writer_state);
 
     op_data.fd_installed = true;
 
@@ -176,10 +185,10 @@ pub fn try_fd_install_x(
 
 #[fexit]
 pub fn io_openat2_x(ctx: FExitContext) -> u32 {
-    try_openat2_x(ctx).unwrap_or(1)
+    try_io_openat2_x(ctx).unwrap_or(1)
 }
 
-fn try_openat2_x(ctx: FExitContext) -> Result<u32, i64> {
+fn try_io_openat2_x(ctx: FExitContext) -> Result<u32, i64> {
     let pid = ctx.pid();
     let Some(OpInfo::Open(OpenData { fd_installed })) =
         (unsafe { shared_state::op_info::get(pid) })
@@ -193,15 +202,16 @@ fn try_openat2_x(ctx: FExitContext) -> Result<u32, i64> {
     }
 
     let auxmap = shared_state::auxiliary_map().ok_or(1)?;
-    // Don't call auxmap.preload_event_header, because we want to continue to append to the work
-    // already done on `fexit:fd_install` or `fexit:io_fixed_fd_install`.
+    // Don't call auxmap.writer(), because we want to continue to append to the work already done on
+    // `fexit:fd_install` or `fexit:io_fixed_fd_install`.
+    let mut writer = auxmap.resume_writer()?;
 
     // Parameter 8: iou_ret.
     let iou_ret: i64 = unsafe { ctx.arg(2) };
-    auxmap.store_param(iou_ret);
+    writer.push(iou_ret);
 
-    auxmap.finalize_event_header();
-    auxmap.submit_event();
+    let event = auxmap.as_bytes()?;
+    submit_event(event);
     Ok(0)
 }
 
@@ -224,13 +234,14 @@ fn try_do_sys_openat2_x(ctx: FExitContext) -> Result<u32, i64> {
     }
 
     let auxmap = shared_state::auxiliary_map().ok_or(1)?;
-    // Don't call auxmap.preload_event_header, because we want to continue to append to the work
-    // already done on `fexit:fd_install`.
+    // Don't call auxmap.writer(), because we want to continue to append to the work already done on
+    // `fexit:fd_install`.
+    let mut writer = auxmap.resume_writer()?;
 
     // Parameter 8: iou_ret.
-    auxmap.store_empty_param();
+    writer.push_empty();
 
-    auxmap.finalize_event_header();
-    auxmap.submit_event();
+    let event = auxmap.as_bytes()?;
+    submit_event(event);
     Ok(0)
 }

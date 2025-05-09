@@ -317,7 +317,7 @@ static int test_openat(struct io_uring *ring, bool use_syscalls, bool use_file_i
 }
 
 int start_server() {
- 	system("nc -lvnp 9001");
+ 	system("nc -lvn 1.2.3.4 9001");
  }
 
 static int test_connect(struct io_uring *ring, bool use_syscalls, bool use_file_indexes) {
@@ -356,7 +356,7 @@ static int test_connect(struct io_uring *ring, bool use_syscalls, bool use_file_
 	struct sockaddr_in serv_addr;
 	serv_addr.sin_family = AF_INET;
 	serv_addr.sin_port = htons(9001);
-	serv_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+	serv_addr.sin_addr.s_addr = inet_addr("1.2.3.4");
 
     ret = do_connect(ring, sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr), use_syscalls, use_file_indexes);
 	if (ret < 0) {

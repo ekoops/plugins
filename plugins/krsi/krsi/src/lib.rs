@@ -18,7 +18,6 @@ limitations under the License.
 use std::{
     ffi::{CStr, CString},
     net::IpAddr,
-    str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,

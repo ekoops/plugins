@@ -43,7 +43,7 @@ use aya_ebpf::{cty::c_int, macros::fexit, programs::FExitContext};
 use krsi_common::EventType;
 use krsi_ebpf_core::{wrap_arg, IoKiocb, IoSocket};
 
-use crate::{defs, shared_state, FileDescriptor};
+use crate::{defs, get_event_num_params, shared_state, submit_event, FileDescriptor};
 
 #[fexit]
 fn io_socket_x(ctx: FExitContext) -> u32 {
@@ -52,7 +52,8 @@ fn io_socket_x(ctx: FExitContext) -> u32 {
 
 fn try_io_socket_x(ctx: FExitContext) -> Result<u32, i64> {
     let auxmap = shared_state::auxiliary_map().ok_or(1)?;
-    auxmap.preload_event_header(EventType::Socket);
+    const EVT_TYPE: EventType = EventType::Socket;
+    let mut writer = auxmap.writer(EVT_TYPE, get_event_num_params(EVT_TYPE))?;
 
     let req: IoKiocb = wrap_arg(unsafe { ctx.arg(0) });
     let sock = req.cmd_as::<IoSocket>();
@@ -60,38 +61,38 @@ fn try_io_socket_x(ctx: FExitContext) -> Result<u32, i64> {
     let iou_ret: i64 = unsafe { ctx.arg(2) };
 
     // Parameter 1: iou_ret.
-    auxmap.store_param(iou_ret);
+    writer.push(iou_ret);
 
     // Parameter 2: fd.
     // Parameter 3: file_index.
     match extract_file_descriptor(&req, &sock, iou_ret) {
-        Ok(Some(file_descriptor)) => auxmap.store_file_descriptor_param(file_descriptor),
+        Ok(Some(file_descriptor)) => writer.push_file_descriptor(file_descriptor),
         _ => {
-            auxmap.store_empty_param();
-            auxmap.store_empty_param();
+            writer.push_empty();
+            writer.push_empty();
         }
     }
 
     // Parameter 4: domain.
     match sock.domain() {
-        Ok(sock_domain) => auxmap.store_param(sock_domain as u32),
-        Err(_) => auxmap.store_empty_param(),
+        Ok(sock_domain) => writer.push(sock_domain as u32),
+        Err(_) => writer.push_empty(),
     };
 
     // Parameter 5: type.
     match sock.r#type() {
-        Ok(sock_type) => auxmap.store_param(sock_type as u32),
-        Err(_) => auxmap.store_empty_param(),
+        Ok(sock_type) => writer.push(sock_type as u32),
+        Err(_) => writer.push_empty(),
     };
 
     // Parameter 6: proto.
     match sock.protocol() {
-        Ok(sock_proto) => auxmap.store_param(sock_proto as u32),
-        Err(_) => auxmap.store_empty_param(),
+        Ok(sock_proto) => writer.push(sock_proto as u32),
+        Err(_) => writer.push_empty(),
     };
 
-    auxmap.finalize_event_header();
-    auxmap.submit_event();
+    let event = auxmap.as_bytes()?;
+    submit_event(event);
     Ok(0)
 }
 
@@ -124,31 +125,32 @@ fn __sys_socket_x(ctx: FExitContext) -> u32 {
 #[allow(non_snake_case)]
 fn try___sys_socket_x(ctx: FExitContext) -> Result<u32, i64> {
     let auxmap = shared_state::auxiliary_map().ok_or(1)?;
-    auxmap.preload_event_header(EventType::Socket);
+    const EVT_TYPE: EventType = EventType::Socket;
+    let mut writer = auxmap.writer(EVT_TYPE, get_event_num_params(EVT_TYPE))?;
 
     // Parameter 1: iou_ret.
-    auxmap.store_empty_param();
+    writer.push_empty();
 
     // Parameter 2: fd.
     let ret: c_int = unsafe { ctx.arg(3) };
-    auxmap.store_param(ret as i64);
+    writer.push(ret as i64);
 
     // Parameter 3: file_index.
-    auxmap.store_empty_param();
+    writer.push_empty();
 
     // Parameter 4: domain.
     let sock_domain: c_int = unsafe { ctx.arg(0) };
-    auxmap.store_param(sock_domain as u32);
+    writer.push(sock_domain as u32);
 
     // Parameter 5: type.
     let sock_type: c_int = unsafe { ctx.arg(1) };
-    auxmap.store_param(sock_type as u32);
+    writer.push(sock_type as u32);
 
     // Parameter 6: proto.
     let sock_proto: c_int = unsafe { ctx.arg(2) };
-    auxmap.store_param(sock_proto as u32);
+    writer.push(sock_proto as u32);
 
-    auxmap.finalize_event_header();
-    auxmap.submit_event();
+    let event = auxmap.as_bytes()?;
+    submit_event(event);
     Ok(0)
 }

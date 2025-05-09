@@ -373,8 +373,6 @@ pub enum RingbufParseError {
     UnexpectedNulTerminator,
     #[error("Missing null terminator")]
     MissingNulTerminator,
-    #[error("Invalid event type {0}")]
-    InvalidType(u16),
     #[error("I/O error")]
     IoError(#[from] std::io::Error),
     #[error("Not yet implemented")]
@@ -493,9 +491,9 @@ where
 pub fn parse_ringbuf_event(mut buf: &[u8]) -> Result<KrsiEvent, RingbufParseError> {
     let evt_hdr = read_event_header(&mut buf)?;
     let (mut lengths, mut values) = buf
-        .split_at_checked(evt_hdr.nparams as usize * size_of::<u16>())
+        .split_at_checked(evt_hdr.nparams.get() as usize * size_of::<u16>())
         .ok_or(RingbufParseError::TruncatedEvent)?;
-    let content = match evt_hdr.evt_type.try_into() {
+    let content = match evt_hdr.evt_type.get().try_into() {
         Ok(EventType::Open) => parse_rb_open_event_content(&mut lengths, &mut values),
         Ok(EventType::Connect) => parse_rb_connect_event_content(&mut lengths, &mut values),
         Ok(EventType::Socket) => parse_rb_socket_event_content(&mut lengths, &mut values),
@@ -505,8 +503,8 @@ pub fn parse_ringbuf_event(mut buf: &[u8]) -> Result<KrsiEvent, RingbufParseErro
         Ok(EventType::Mkdirat) => parse_rb_mkdirat_event_content(&mut lengths, &mut values),
         _ => Err(RingbufParseError::NotYetImplemented),
     }?;
-    let pid = (evt_hdr.tgid_pid >> 32) as u32;
-    let tid = (evt_hdr.tgid_pid & 0xffffffff) as u32;
+    let pid = (evt_hdr.tgid_pid.get() >> 32) as u32;
+    let tid = (evt_hdr.tgid_pid.get() & 0xffffffff) as u32;
     Ok(KrsiEvent { pid, tid, content })
 }
 
@@ -515,15 +513,13 @@ fn read_event_header(buf: &mut &[u8]) -> Result<EventHeader, RingbufParseError> 
     let tgid_pid = buf.read_u64::<NativeEndian>()?;
     let len = buf.read_u32::<NativeEndian>()?;
     let evt_type = buf.read_u16::<NativeEndian>()?;
-    let evt_type =
-        EventType::try_from(evt_type).map_err(|_| RingbufParseError::InvalidType(evt_type))?;
     let nparams = buf.read_u32::<NativeEndian>()?;
     Ok(EventHeader {
-        ts,
-        tgid_pid,
-        len,
-        evt_type,
-        nparams,
+        ts: ts.into(),
+        tgid_pid: tgid_pid.into(),
+        len: len.into(),
+        evt_type: evt_type.into(),
+        nparams: nparams.into(),
     })
 }
 

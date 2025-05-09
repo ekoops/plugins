@@ -52,9 +52,9 @@ use krsi_common::EventType;
 use krsi_ebpf_core::{wrap_arg, IoAsyncMsghdr, IoKiocb, Sockaddr};
 
 use crate::{
-    iouring, shared_state,
+    get_event_num_params, iouring, shared_state,
     shared_state::op_info::{BindData, OpInfo},
-    FileDescriptor,
+    submit_event, FileDescriptor,
 };
 
 #[fentry]
@@ -86,31 +86,32 @@ fn try_io_bind_x(ctx: FExitContext) -> Result<u32, i64> {
     let _ = shared_state::op_info::remove(pid);
 
     let auxmap = shared_state::auxiliary_map().ok_or(1)?;
-    auxmap.preload_event_header(EventType::Bind);
+    const EVT_TYPE: EventType = EventType::Bind;
+    let mut writer = auxmap.writer(EVT_TYPE, get_event_num_params(EVT_TYPE))?;
 
     // Parameter 1: iou_ret.
     let iou_ret: i64 = unsafe { ctx.arg(2) };
-    auxmap.store_param(iou_ret);
+    writer.push(iou_ret);
 
     // Parameter 2: res.
     let req: IoKiocb = wrap_arg(unsafe { ctx.arg(0) });
     match iouring::io_kiocb_cqe_res(&req, iou_ret) {
-        Ok(Some(cqe_res)) => auxmap.store_param(cqe_res as i64),
-        _ => auxmap.store_empty_param(),
+        Ok(Some(cqe_res)) => writer.push(cqe_res as i64),
+        _ => writer.push_empty(),
     }
 
     // Parameter 3: addr.
     match req.async_data_as::<IoAsyncMsghdr>() {
-        Ok(io) => auxmap.store_sockaddr_param(&io.addr(), true),
-        Err(_) => auxmap.store_empty_param(),
+        Ok(io) => writer.push_sockaddr(&io.addr(), true),
+        Err(_) => writer.push_empty(),
     };
 
     // Parameter 4: fd.
     // Parameter 5: file_index.
-    auxmap.store_file_descriptor_param(*file_descriptor);
+    writer.push_file_descriptor(*file_descriptor);
 
-    auxmap.finalize_event_header();
-    auxmap.submit_event();
+    let event = auxmap.as_bytes()?;
+    submit_event(event);
     Ok(0)
 }
 
@@ -123,26 +124,27 @@ fn __sys_bind_x(ctx: FExitContext) -> u32 {
 #[allow(non_snake_case)]
 fn try___sys_bind_x(ctx: FExitContext) -> Result<u32, i64> {
     let auxmap = shared_state::auxiliary_map().ok_or(1)?;
-    auxmap.preload_event_header(EventType::Bind);
+    const EVT_TYPE: EventType = EventType::Bind;
+    let mut writer = auxmap.writer(EVT_TYPE, get_event_num_params(EVT_TYPE))?;
 
     // Parameter 1: iou_ret.
-    auxmap.store_empty_param();
+    writer.push_empty();
 
     // Parameter 2: res.
     let res: i64 = unsafe { ctx.arg(3) };
-    auxmap.store_param(res);
+    writer.push(res);
 
     // Parameter 3: addr.
     let sockaddr: Sockaddr = wrap_arg(unsafe { ctx.arg(1) });
-    auxmap.store_sockaddr_param(&sockaddr, false);
+    writer.push_sockaddr(&sockaddr, false);
 
     // Parameter 4: fd.
     // Parameter 5: file_index.
     let fd = unsafe { ctx.arg(0) };
     let file_descriptor = FileDescriptor::Fd(fd);
-    auxmap.store_file_descriptor_param(file_descriptor);
+    writer.push_file_descriptor(file_descriptor);
 
-    auxmap.finalize_event_header();
-    auxmap.submit_event();
+    let event = auxmap.as_bytes()?;
+    submit_event(event);
     Ok(0)
 }

@@ -53,8 +53,9 @@ use krsi_common::{
 use krsi_ebpf_core::{wrap_arg, Filename};
 
 use crate::{
-    defs, scap, shared_state,
+    defs, get_event_num_params, scap, shared_state,
     shared_state::op_info::{OpInfo, SymlinkatData},
+    submit_event,
 };
 
 #[fentry]
@@ -86,29 +87,33 @@ fn try_do_symlinkat_x(ctx: FExitContext) -> Result<u32, i64> {
     }
 
     let auxmap = shared_state::auxiliary_map().ok_or(1)?;
-    auxmap.preload_event_header(EventType::Symlinkat);
+    const EVT_TYPE: EventType = EventType::Symlinkat;
+    let mut writer = auxmap.writer(EVT_TYPE, get_event_num_params(EVT_TYPE))?;
 
     // Parameter 1: target.
     let target: Filename = wrap_arg(unsafe { ctx.arg(0) });
-    auxmap.store_filename_param(&target, defs::MAX_PATH, true);
+    writer.push_filename(&target, defs::MAX_PATH, true);
 
     // Parameter 2: linkdirfd.
     let linkdirfd: i32 = unsafe { ctx.arg(1) };
-    auxmap.store_param(scap::encode_dirfd(linkdirfd) as i64);
+    writer.push(scap::encode_dirfd(linkdirfd) as i64);
 
     // Parameter 3: linkpath.
     let linkpath: Filename = wrap_arg(unsafe { ctx.arg(2) });
-    auxmap.store_filename_param(&linkpath, defs::MAX_PATH, true);
+    writer.push_filename(&linkpath, defs::MAX_PATH, true);
 
     // Parameter 4: res.
     let res: i64 = unsafe { ctx.arg(3) };
-    auxmap.store_param(res);
+    writer.push(res);
 
     if !is_iou {
         // Parameter 5: iou_ret.
-        auxmap.store_empty_param();
-        auxmap.finalize_event_header();
-        auxmap.submit_event();
+        writer.push_empty();
+        let event = auxmap.as_bytes()?;
+        submit_event(event);
+    } else {
+        let writer_state = writer.save();
+        auxmap.save_writer_state(writer_state);
     }
 
     Ok(0)
@@ -124,14 +129,15 @@ fn try_io_symlinkat_x(ctx: FExitContext) -> Result<u32, i64> {
     let _ = shared_state::op_info::remove(pid);
 
     let auxmap = shared_state::auxiliary_map().ok_or(1)?;
-    // Don't call auxmap.preload_event_header, because we want to continue to append to the work
-    // already done on `fexit:do_symlinkat`.
+    // Don't call auxmap.writer(), because we want to continue to append to the work already done on
+    // `fexit:do_symlinkat`.
+    let mut writer = auxmap.resume_writer()?;
 
     // Parameter 5: iou_ret.
     let iou_ret: i64 = unsafe { ctx.arg(2) };
-    auxmap.store_param(iou_ret);
+    writer.push(iou_ret);
 
-    auxmap.finalize_event_header();
-    auxmap.submit_event();
+    let event = auxmap.as_bytes()?;
+    submit_event(event);
     Ok(0)
 }
